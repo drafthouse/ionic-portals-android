@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.Trace
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +19,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
 import java.lang.reflect.Field
+import java.util.UUID
 import kotlin.reflect.KVisibility
 
 /**
@@ -50,6 +52,11 @@ open class PortalFragment : Fragment {
     private var subscriptions = mutableMapOf<String, Int>()
     private var pubSub = PortalsPubSub.shared
     private var initialContext: Any? = null
+
+    /**
+     * Unique identifier for this fragment instance. Injected into the initial context as `instanceId`.
+     */
+    val instanceId: String = UUID.randomUUID().toString()
 
     private val viewModel: PortalViewModel by viewModels()
 
@@ -291,6 +298,19 @@ open class PortalFragment : Fragment {
     }
 
     /**
+     * Loads the Capacitor config bundled with the Portal assets, or null if it doesn't exist.
+     * The existence probe stream is closed so it isn't leaked.
+     */
+    private fun loadAssetConfig(startDir: String): CapConfig? {
+        return try {
+            requireContext().assets.open("$startDir/capacitor.config.json").use { }
+            CapConfig.loadFromAssets(requireContext(), startDir)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Load the WebView and create the Bridge
      */
     private fun load(savedInstanceState: Bundle?) {
@@ -339,20 +359,14 @@ open class PortalFragment : Fragment {
                             bridgeBuilder.setServerPath(ServerPath(ServerPath.PathType.BASE_PATH, liveUpdateFiles!!.path))
                         } else {
                             if (config == null) {
-                                try {
-                                    val configFile = requireContext().assets.open("$startDir/capacitor.config.json")
-                                    configToUse = CapConfig.loadFromAssets(requireContext(), startDir)
-                                } catch (_: Exception) {}
+                                configToUse = loadAssetConfig(startDir)
                             }
 
                             bridgeBuilder.setServerPath(ServerPath(ServerPath.PathType.ASSET_PATH, startDir))
                         }
                     } else {
                         if (config == null) {
-                            try {
-                                val configFile = requireContext().assets.open("$startDir/capacitor.config.json")
-                                configToUse = CapConfig.loadFromAssets(requireContext(), startDir)
-                            } catch (_: Exception) {}
+                            configToUse = loadAssetConfig(startDir)
                         }
 
                         bridgeBuilder = bridgeBuilder.setServerPath(ServerPath(ServerPath.PathType.ASSET_PATH, startDir))
@@ -394,9 +408,19 @@ open class PortalFragment : Fragment {
                     }
 
                     bridgeBuilder = bridgeBuilder.setConfig(configToUse)
-                    bridge = bridgeBuilder.create()
+                    Trace.beginSection("Portals.Bridge.create")
+                    try {
+                        bridge = bridgeBuilder.create()
+                    } finally {
+                        Trace.endSection()
+                    }
 
-                    setupPortalsJS()
+                    Trace.beginSection("Portals.setupPortalsJS")
+                    try {
+                        setupPortalsJS()
+                    } finally {
+                        Trace.endSection()
+                    }
                     keepRunning = bridge?.shouldKeepRunning()!!
 
                     onBridgeAvailable?.let { onBridgeAvailable -> bridge?.let { bridge -> onBridgeAvailable(bridge)} }
@@ -423,6 +447,7 @@ open class PortalFragment : Fragment {
 
         val portalInitialContext = JSONObject()
         portalInitialContext.put("name", portal?.name)
+        portalInitialContext.put("instanceId", instanceId)
 
         if(initialContext != null) {
             val initialContextValues: JSONObject = when (initialContext) {
